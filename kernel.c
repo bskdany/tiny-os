@@ -9,15 +9,6 @@ typedef uint32_t size_t;
  * getting the value */
 extern char __bss[], __bss_end[], __stack_top[];
 
-void *memset(void *buf, char c, size_t n) {
-    uint8_t *p = (uint8_t *)buf;
-    for (size_t i = 0; i < n; i++) {
-        *p = c;
-    }
-    /* this is returned for chaining */
-    return buf;
-}
-
 /*
     On RISC-V ISA the CPU can have the following privilege modes
     - U -> user mode (lower privilege)
