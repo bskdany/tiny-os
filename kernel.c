@@ -6,7 +6,7 @@ typedef uint32_t size_t;
 
 /* get the addresses declared in the kernel linker script, [] is used to avoid
  * getting the value */
-extern char __bss[], __bss_end[], __stack_top[];
+extern char __bss[], __bss_end[], __stack_top[], __free_ram_start[], __free_ram_end[];
 
 /*
     On RISC-V ISA the CPU can have the following privilege modes
@@ -138,6 +138,31 @@ __attribute__((naked)) __attribute__((aligned(4))) void kernel_entry(void) {
                          "sret\n");
 }
 
+// /* linear allocator, mem can't be freed */
+// paddr_t alloc_pages(uint32_t n) {
+//     /* to keep track where we are I just make this global */
+//     static paddr_t free_ram_start = (paddr_t)__free_ram_start;
+//     paddr_t new_free_mem_start = free_ram_start + PAGE_SIZE * n;
+//     if (new_free_mem_start > (paddr_t)__free_ram_end) {
+//         PANIC("Out of memory");
+//     }
+//     free_ram_start = new_free_mem_start;
+
+//     memset((void *)free_ram_start, 0, n * PAGE_SIZE);
+//     return free_ram_start;
+// }
+
+paddr_t alloc_pages(uint32_t n) {
+    static paddr_t next_paddr = (paddr_t)__free_ram_start;
+    paddr_t paddr = next_paddr;
+    next_paddr += n * PAGE_SIZE;
+
+    if (next_paddr > (paddr_t)__free_ram_end) PANIC("out of memory");
+
+    memset((void *)paddr, 0, n * PAGE_SIZE);
+    return paddr;
+}
+
 void kernel_main(void) {
     memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
 
@@ -145,8 +170,7 @@ void kernel_main(void) {
     WRITE_CSR(stvec, (uint32_t)kernel_entry);
     __asm__ __volatile__("unimp");
 
-    for (;;)
-        ;
+    PANIC("Booted");
 }
 
 /* the attributes set the function address to what we declared in the linker script and tell the compiler to avoid

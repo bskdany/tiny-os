@@ -12,6 +12,7 @@ typedef uint32_t vaddr_t; /* virtual address */
 #define true 1
 #define false 0
 #define NULL ((void *)0) /* generic pointer that point to nothing */
+#define PAGE_SIZE 4096
 
 /* use compilers default alignment functions  */
 #define align_up(value, align)                                                                                         \
