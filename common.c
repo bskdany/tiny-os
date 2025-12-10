@@ -104,16 +104,9 @@ void printf(const char *fmt, ...) {
                 /* binary to hex conversion */
                 const char *hex_table = "0123456789abcdef";
                 int val = va_arg(v_args, int);
-
-                char out[9]; /* 32/4 = 8 + 1*/
-                int i = 0;
-                do {
-                    out[i++] = hex_table[val & 0xf];
-                    val = val >> 4;
-                } while (val > 0);
-
-                for (i -= 1; i >= 0; i--) {
-                    putchar(out[i]);
+                for (int i = 7; i >= 0; i--) {
+                    int blob = (val >> (4 * i)) & 0xf;
+                    putchar(hex_table[blob]);
                 }
                 break;
             }
