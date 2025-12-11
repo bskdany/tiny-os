@@ -9,6 +9,8 @@ typedef uint32_t size_t;
 extern char __bss[], __bss_end[], __stack_top[], __free_ram_start[], __free_ram_end[];
 
 struct process procs[PROCS_MAX];
+struct process *current_proc;
+struct process *idle_proc; /* dummy process to run when no processes are present */
 
 /*
     On RISC-V ISA the CPU can have the following privilege modes
@@ -225,6 +227,32 @@ void delay(void) {
         __asm__ __volatile__("nop"); // do nothing
 }
 
+/* small scheduler */
+void yield(void) {
+    struct process *next_proc = idle_proc;
+
+    /* tries to find the first process following the current pid that is runnable and is not the idle process */
+    for (int i = 0; i < PROCS_MAX; i++) {
+        struct process *proc_candidate = &procs[(current_proc->pid + i) % PROCS_MAX];
+        if (proc_candidate->state == PROC_RUNNABLE && proc_candidate->pid > 0) {
+            next_proc = proc_candidate;
+            break;
+        }
+    }
+
+    /* if found and it's the same as the current process, we keep going */
+    if (next_proc == current_proc) {
+        return;
+    }
+
+    /* if it's not found then we switch to the idle process */
+
+    /* context switch */
+    struct process *prev_proc = current_proc;
+    current_proc = next_proc;
+    switch_context(&prev_proc->sp, &next_proc->sp);
+}
+
 struct process *proc_a;
 struct process *proc_b;
 
@@ -232,8 +260,8 @@ void proc_a_entry(void) {
     printf("Process A started\n");
     while (1) {
         putchar('A');
-        switch_context(&proc_a->sp, &proc_b->sp);
         delay();
+        yield();
     }
 }
 
@@ -241,8 +269,8 @@ void proc_b_entry(void) {
     printf("Process B started\n");
     while (1) {
         putchar('B');
-        switch_context(&proc_b->sp, &proc_a->sp);
         delay();
+        yield();
     }
 }
 
@@ -252,9 +280,15 @@ void kernel_main(void) {
     /* stvec - supervisor trap vector base address register, holds the address of the kernel trap handler function */
     WRITE_CSR(stvec, (uint32_t)kernel_entry);
 
+    /* default idle process */
+    idle_proc = create_proces((uint32_t)NULL);
+    idle_proc->pid = 0;
+    current_proc = idle_proc;
+
     proc_a = create_proces((uint32_t)proc_a_entry);
     proc_b = create_proces((uint32_t)proc_b_entry);
-    proc_a_entry();
+
+    yield();
 
     PANIC("Unreachable state");
 }
