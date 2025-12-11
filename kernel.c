@@ -8,6 +8,8 @@ typedef uint32_t size_t;
  * getting the value */
 extern char __bss[], __bss_end[], __stack_top[], __free_ram_start[], __free_ram_end[];
 
+struct process procs[PROCS_MAX];
+
 /*
     On RISC-V ISA the CPU can have the following privilege modes
     - U -> user mode (lower privilege)
@@ -139,19 +141,6 @@ __attribute__((naked)) __attribute__((aligned(4))) void kernel_entry(void) {
 }
 
 // /* linear allocator, mem can't be freed */
-// paddr_t alloc_pages(uint32_t n) {
-//     /* to keep track where we are I just make this global */
-//     static paddr_t free_ram_start = (paddr_t)__free_ram_start;
-//     paddr_t new_free_mem_start = free_ram_start + PAGE_SIZE * n;
-//     if (new_free_mem_start > (paddr_t)__free_ram_end) {
-//         PANIC("Out of memory");
-//     }
-//     free_ram_start = new_free_mem_start;
-
-//     memset((void *)free_ram_start, 0, n * PAGE_SIZE);
-//     return free_ram_start;
-// }
-
 paddr_t alloc_pages(uint32_t n) {
     static paddr_t next_paddr = (paddr_t)__free_ram_start;
     paddr_t paddr = next_paddr;
@@ -163,14 +152,111 @@ paddr_t alloc_pages(uint32_t n) {
     return paddr;
 }
 
+__attribute__((naked)) void switch_context(uint32_t *prev_sp, uint32_t *next_sp) {
+    __asm__ __volatile__("addi sp, sp, -13 * 4\n"
+                         "sw ra,  0  * 4(sp)\n" /* store word from ra into sp at offset */
+                         "sw s0,  1  * 4(sp)\n"
+                         "sw s1,  2  * 4(sp)\n"
+                         "sw s2,  3  * 4(sp)\n"
+                         "sw s3,  4  * 4(sp)\n"
+                         "sw s4,  5  * 4(sp)\n"
+                         "sw s5,  6  * 4(sp)\n"
+                         "sw s6,  7  * 4(sp)\n"
+                         "sw s7,  8  * 4(sp)\n"
+                         "sw s8,  9  * 4(sp)\n"
+                         "sw s9,  10 * 4(sp)\n"
+                         "sw s10, 11 * 4(sp)\n"
+                         "sw s11, 12 * 4(sp)\n"
+
+                         /* stack pointers are swapped*/
+                         "sw sp, (a0)\n"
+                         "lw sp, (a1)\n"
+
+                         "lw ra,  0  * 4(sp)\n" /* load word into register ra from sp at offset */
+                         "lw s0,  1  * 4(sp)\n"
+                         "lw s1,  2  * 4(sp)\n"
+                         "lw s2,  3  * 4(sp)\n"
+                         "lw s3,  4  * 4(sp)\n"
+                         "lw s4,  5  * 4(sp)\n"
+                         "lw s5,  6  * 4(sp)\n"
+                         "lw s6,  7  * 4(sp)\n"
+                         "lw s7,  8  * 4(sp)\n"
+                         "lw s8,  9  * 4(sp)\n"
+                         "lw s9,  10 * 4(sp)\n"
+                         "lw s10, 11 * 4(sp)\n"
+                         "lw s11, 12 * 4(sp)\n"
+                         "addi sp, sp, 13 * 4\n"
+                         "ret\n"
+
+    );
+}
+
+struct process *create_proces(uint32_t proc_entrypoint) {
+
+    struct process *proc = NULL;
+
+    int i = 0;
+    for (i = 0; i < PROCS_MAX; i++) {
+        if (procs[i].state == PROC_UNUSED) {
+            proc = &procs[i];
+            break;
+        }
+    }
+
+    if (!proc) {
+        PANIC("no leftover processes");
+    }
+
+    uint32_t *sp = (uint32_t *)&(proc->stack[sizeof(proc->stack)]);
+    for (int i = 0; i < 12; i++) {
+        *--sp = 0; /* zero */
+    }
+    *--sp = (uint32_t)proc_entrypoint; /* return address set to the proc entrypoint */
+
+    /* init proc struct */
+    proc->pid = i + 1;
+    proc->state = PROC_RUNNABLE;
+    proc->sp = (vaddr_t)sp;
+    return proc;
+}
+
+void delay(void) {
+    for (int i = 0; i < 300000000; i++)
+        __asm__ __volatile__("nop"); // do nothing
+}
+
+struct process *proc_a;
+struct process *proc_b;
+
+void proc_a_entry(void) {
+    printf("Process A started\n");
+    while (1) {
+        putchar('A');
+        switch_context(&proc_a->sp, &proc_b->sp);
+        delay();
+    }
+}
+
+void proc_b_entry(void) {
+    printf("Process B started\n");
+    while (1) {
+        putchar('B');
+        switch_context(&proc_b->sp, &proc_a->sp);
+        delay();
+    }
+}
+
 void kernel_main(void) {
     memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
 
     /* stvec - supervisor trap vector base address register, holds the address of the kernel trap handler function */
     WRITE_CSR(stvec, (uint32_t)kernel_entry);
-    __asm__ __volatile__("unimp");
 
-    PANIC("Booted");
+    proc_a = create_proces((uint32_t)proc_a_entry);
+    proc_b = create_proces((uint32_t)proc_b_entry);
+    proc_a_entry();
+
+    PANIC("Unreachable state");
 }
 
 /* the attributes set the function address to what we declared in the linker script and tell the compiler to avoid
