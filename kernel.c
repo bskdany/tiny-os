@@ -13,6 +13,8 @@ struct process procs[PROCS_MAX];
 struct process *current_proc;
 struct process *idle_proc; /* dummy process to run when no processes are present */
 
+void yield(void);
+
 /*
     On RISC-V ISA the CPU can have the following privilege modes
     - U -> user mode (lower privilege)
@@ -55,10 +57,25 @@ struct sbi_ret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, l
 
 void putchar(char ch) { sbi_call(ch, 0, 0, 0, 0, 0, 0, 1 /* Console Putchar */); }
 
+long getchar(void) {
+    struct sbi_ret ret = sbi_call(0, 0, 0, 0, 0, 0, 0, 2);
+    return ret.err;
+}
+
 void handle_syscall(struct trap_frame *f) {
     switch (f->a3) {
     case SYS_PUTCHAR:
         putchar(f->a0);
+        break;
+    case SYS_GETCHAR:
+        while (1) {
+            long ch = getchar();
+            if (ch >= 0) {
+                f->a0 = ch;
+                break;
+            }
+            yield(); /* bruh */
+        }
         break;
     default:
         PANIC("unexpected systcall a3: %x\n", f->a3);

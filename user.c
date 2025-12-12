@@ -21,6 +21,8 @@ int syscall(int sysno, int arg0, int arg1, int arg2) {
 
 void putchar(char c) { syscall(SYS_PUTCHAR, c, 0, 0); }
 
+int getchar(void) { return syscall(SYS_GETCHAR, 0, 0, 0); }
+
 __attribute__((section(".text.start"))) __attribute__((naked)) void start(void) {
     __asm__ __volatile__("mv sp, %[stack_top] \n"
                          "call main           \n"
