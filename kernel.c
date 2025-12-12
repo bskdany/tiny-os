@@ -6,7 +6,7 @@ typedef uint32_t size_t;
 
 /* get the addresses declared in the kernel linker script, [] is used to avoid
  * getting the value */
-extern char __bss[], __bss_end[], __stack_top[], __free_ram_start[], __free_ram_end[];
+extern char __bss[], __bss_end[], __stack_top[], __free_ram_start[], __free_ram_end[], __kernel_base[];
 
 struct process procs[PROCS_MAX];
 struct process *current_proc;
@@ -200,6 +200,49 @@ __attribute__((naked)) void switch_context(uint32_t *prev_sp, uint32_t *next_sp)
     );
 }
 
+void map_page(uint32_t *table1, vaddr_t vaddr, paddr_t paddr, uint32_t flags) {
+    if (!is_aligned(vaddr, PAGE_SIZE)) PANIC("unaligned vaddr %x", paddr);
+    if (!is_aligned(paddr, PAGE_SIZE)) PANIC("unaligned paddr %x", paddr);
+
+    /* the riscv Sv32 hardware accelerated page table system uses a two level page table
+    the 32bit vaddr is divided into first level VPN[1] (10bits), second level VPN[0] (10bits) and a 12bits offset
+    */
+
+    uint32_t vpn1 = (vaddr >> 22) & 0x3ff;
+    /* check if page exists */
+    if ((table1[vpn1] & PAGE_V) == 0) {
+        /* create a new page table entry */
+        uint32_t pt_paddr = alloc_pages(1);
+        table1[vpn1] = ((pt_paddr / PAGE_SIZE) << 10) | PAGE_V;
+    }
+
+    uint32_t *table0 = (uint32_t *)((table1[vpn1] >> 10) * PAGE_SIZE);
+
+    uint32_t vpn0 = (vaddr >> 12) & 0x3ff; /* bits 21-12 */
+    table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
+
+    /* example for me to understand wtf is going on
+        virtual     0b01010101010101010101000000000000 <- aligned to PAGE_SIZE
+        physical    0b11111111111111111111000000000000 <-/
+
+        table1 is a 2 level page
+        vpn1 - [31-22] - 0b0101010101
+        vpn0 - [21-12] - 0b0101010101
+
+        check if vpn1 is in table1 -> no -> allocate a page and put it's page number in table[vpn1]
+        get the nested table page table0
+
+        get the page number of out target physical address
+        the nested table at vpn0 to be the page number
+
+        table
+         |
+        vpn1 -> nested table address page number
+                        |
+                vpn0 - physical address page number
+    */
+}
+
 struct process *create_proces(uint32_t proc_entrypoint) {
 
     struct process *proc = NULL;
@@ -222,10 +265,16 @@ struct process *create_proces(uint32_t proc_entrypoint) {
     }
     *--sp = (uint32_t)proc_entrypoint; /* return address set to the proc entrypoint */
 
+    uint32_t *page_table = (uint32_t *)alloc_pages(1);
+    for (paddr_t paddr = (paddr_t)__kernel_base; paddr < (paddr_t)__free_ram_end; paddr += PAGE_SIZE) {
+        map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+    }
+
     /* init proc struct */
     proc->pid = i + 1;
     proc->state = PROC_RUNNABLE;
     proc->sp = (vaddr_t)sp;
+    proc->page_table = page_table;
     return proc;
 }
 
@@ -255,9 +304,18 @@ void yield(void) {
     /* if it's not found then we switch to the idle process */
 
     /* because we now use the proc stack, we confine them to their own exception */
-    __asm__ __volatile__("csrw sscratch, %[sscratch]\n"
-                         :
-                         : [sscratch] "r"((uint32_t)&next_proc->stack[sizeof(next_proc->stack)]));
+    __asm__ __volatile__(
+        "sfence.vma\n"         /* ensure all previous mem ops are completed */
+        "csrw satp, %[satp]\n" /* satp holds the physical addr of the curr level 1 page table, we load the page table of
+                                  the next process  */
+        "sfence.vma\n"         /* flush the TLB */
+        "csrw sscratch, %[sscratch]\n" /* write the curr stack pointer to M registers for later use in contexts
+                                          switching */
+        :
+        // Don't forget the trailing comma!
+        : [satp] "r"(SATP_SV32 | ((uint32_t)next_proc->page_table / PAGE_SIZE)), [sscratch] "r"(
+                                                                                     (uint32_t)&next_proc->stack[sizeof(
+                                                                                         next_proc->stack)]));
 
     /* context switch */
     struct process *prev_proc = current_proc;

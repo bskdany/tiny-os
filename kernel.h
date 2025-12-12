@@ -69,7 +69,15 @@ struct trap_frame {
 
 struct process {
     int pid;
-    int state;           /* unused or rumnnable */
-    vaddr_t sp;          /* stack pointer */
+    int state;  /* unused or rumnnable */
+    vaddr_t sp; /* stack pointer */
+    uint32_t *page_table;
     uint8_t stack[8192]; /* kernel stack */
 };
+
+#define SATP_SV32 (1u << 31) /* internal flag */
+#define PAGE_V (1 << 0)      // "Valid" bit (entry is enabled)
+#define PAGE_R (1 << 1)      // Readable
+#define PAGE_W (1 << 2)      // Writable
+#define PAGE_X (1 << 3)      // Executable
+#define PAGE_U (1 << 4)      // User (accessible in user mode)
