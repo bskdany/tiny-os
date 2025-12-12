@@ -7,6 +7,7 @@ typedef uint32_t size_t;
 /* get the addresses declared in the kernel linker script, [] is used to avoid
  * getting the value */
 extern char __bss[], __bss_end[], __stack_top[], __free_ram_start[], __free_ram_end[], __kernel_base[];
+extern char _binary_shell_bin_start[], _binary_shell_bin_size[];
 
 struct process procs[PROCS_MAX];
 struct process *current_proc;
@@ -54,6 +55,16 @@ struct sbi_ret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, l
 
 void putchar(char ch) { sbi_call(ch, 0, 0, 0, 0, 0, 0, 1 /* Console Putchar */); }
 
+void handle_syscall(struct trap_frame *f) {
+    switch (f->a3) {
+    case SYS_PUTCHAR:
+        putchar(f->a0);
+        break;
+    default:
+        PANIC("unexpected systcall a3: %x\n", f->a3);
+    }
+}
+
 void handle_trap(struct trap_frame *f) {
     /* scause - cause of exception  */
     uint32_t scause = READ_CSR(scause);
@@ -61,7 +72,14 @@ void handle_trap(struct trap_frame *f) {
     uint32_t stval = READ_CSR(stval);
     uint32_t user_pc = READ_CSR(sepc);
 
-    PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n", scause, stval, user_pc);
+    if (scause == SCAUSE_ECALL) {
+        handle_syscall(f);
+        user_pc += 4; /* jump 4 to skip hte ecall and continue with exec */
+    } else {
+        PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n", scause, stval, user_pc);
+    }
+
+    WRITE_CSR(sepc, user_pc);
 }
 
 /* init core kernel functions */
@@ -243,7 +261,15 @@ void map_page(uint32_t *table1, vaddr_t vaddr, paddr_t paddr, uint32_t flags) {
     */
 }
 
-struct process *create_proces(uint32_t proc_entrypoint) {
+__attribute__((naked)) void user_entry(void) {
+    __asm__ __volatile__("csrw sepc, %[sepc]        \n" /* program counter */
+                         "csrw sstatus, %[sstatus]  \n" /* hardware interrupts in user mode (won't be used) */
+                         "sret                      \n"
+                         :
+                         : [sepc] "r"(USER_BASE), [sstatus] "r"(SSTATUS_SPIE));
+}
+
+struct process *create_proces(const void *image, size_t image_size) {
 
     struct process *proc = NULL;
 
@@ -263,11 +289,26 @@ struct process *create_proces(uint32_t proc_entrypoint) {
     for (int i = 0; i < 12; i++) {
         *--sp = 0; /* zero */
     }
-    *--sp = (uint32_t)proc_entrypoint; /* return address set to the proc entrypoint */
+    *--sp = (uint32_t)user_entry; /* return address set to the proc entrypoint */
 
+    /* map kernel pages */
     uint32_t *page_table = (uint32_t *)alloc_pages(1);
     for (paddr_t paddr = (paddr_t)__kernel_base; paddr < (paddr_t)__free_ram_end; paddr += PAGE_SIZE) {
         map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+    }
+
+    /* map user pages */
+    for (uint32_t off = 0; off < image_size; off += PAGE_SIZE) {
+        paddr_t page = alloc_pages(1);
+
+        size_t remaining = image_size - off;
+        size_t copy_size = PAGE_SIZE <= remaining ? PAGE_SIZE : remaining;
+
+        /* image is put in a page */
+        memcpy((void *)page, image + off, copy_size);
+
+        /* mapping is done from the app private addresses to the page */
+        map_page(page_table, USER_BASE + off, page, PAGE_U | PAGE_R | PAGE_W | PAGE_X);
     }
 
     /* init proc struct */
@@ -323,26 +364,26 @@ void yield(void) {
     switch_context(&prev_proc->sp, &next_proc->sp);
 }
 
-struct process *proc_a;
-struct process *proc_b;
+// struct process *proc_a;
+// struct process *proc_b;
 
-void proc_a_entry(void) {
-    printf("Process A started\n");
-    while (1) {
-        putchar('A');
-        delay();
-        yield();
-    }
-}
+// void proc_a_entry(void) {
+//     printf("Process A started\n");
+//     while (1) {
+//         putchar('A');
+//         delay();
+//         yield();
+//     }
+// }
 
-void proc_b_entry(void) {
-    printf("Process B started\n");
-    while (1) {
-        putchar('B');
-        delay();
-        yield();
-    }
-}
+// void proc_b_entry(void) {
+//     printf("Process B started\n");
+//     while (1) {
+//         putchar('B');
+//         delay();
+//         yield();
+//     }
+// }
 
 void kernel_main(void) {
     memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
@@ -351,12 +392,11 @@ void kernel_main(void) {
     WRITE_CSR(stvec, (uint32_t)kernel_entry);
 
     /* default idle process */
-    idle_proc = create_proces((uint32_t)NULL);
+    idle_proc = create_proces(NULL, 0);
     idle_proc->pid = 0;
     current_proc = idle_proc;
 
-    proc_a = create_proces((uint32_t)proc_a_entry);
-    proc_b = create_proces((uint32_t)proc_b_entry);
+    create_proces(_binary_shell_bin_start, (size_t)_binary_shell_bin_size);
 
     yield();
 
